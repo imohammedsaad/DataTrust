@@ -1,0 +1,466 @@
+openapi: 3.1.0
+info:
+  title: DataTrust API
+  version: 0.1.0
+  description: >
+    Shared MVP contract for investigating data reliability incidents.
+    Measurements and evidence are produced by Exasol-backed checks. Diagnostic
+    hypotheses are rule-based and do not assert an unverified root cause.
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+tags:
+  - name: Health
+  - name: Incidents
+  - name: Check runs
+paths:
+  /health/live:
+    get:
+      tags: [Health]
+      operationId: getLiveness
+      summary: Check whether the API process is running
+      responses:
+        "200":
+          description: API process is alive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: ok
+  /health/ready:
+    get:
+      tags: [Health]
+      operationId: getReadiness
+      summary: Check whether the API can serve database-backed requests
+      responses:
+        "200":
+          description: API and required database dependency are ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: ready
+        "503":
+          description: A required dependency is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/incidents:
+    get:
+      tags: [Incidents]
+      operationId: listIncidents
+      summary: List incidents
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Filter by incident lifecycle status.
+          schema:
+            $ref: "#/components/schemas/IncidentStatus"
+      responses:
+        "200":
+          description: Incidents ordered by most recently updated first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/IncidentSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/incidents/{incident_id}:
+    get:
+      tags: [Incidents]
+      operationId: getIncident
+      summary: Get incident evidence and investigation context
+      parameters:
+        - $ref: "#/components/parameters/IncidentId"
+      responses:
+        "200":
+          description: Incident detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IncidentDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/check-runs:
+    post:
+      tags: [Check runs]
+      operationId: createCheckRun
+      summary: Run a check synchronously for a dataset and target date
+      description: >
+        Each accepted request creates a new check run. The server chooses its
+        baseline according to the agreed dataset policy; clients cannot submit
+        measurements or thresholds. A successful response includes any
+        incident detected or resolved by this run.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCheckRunRequest"
+            example:
+              dataset_id: orders
+              target_date: "2026-10-16"
+      responses:
+        "201":
+          description: Check completed and its result recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CheckRun"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: Dataset does not exist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Check cannot be evaluated with the available historical data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/check-runs/{run_id}:
+    get:
+      tags: [Check runs]
+      operationId: getCheckRun
+      summary: Get a completed check run
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Check-run result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CheckRun"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+components:
+  parameters:
+    IncidentId:
+      name: incident_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  responses:
+    BadRequest:
+      description: Request is invalid
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Requested resource does not exist
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ServiceUnavailable:
+      description: A required dependency is unavailable
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, ready]
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
+    IncidentStatus:
+      type: string
+      enum: [open, resolved]
+    Severity:
+      type: string
+      enum: [low, medium, high, critical]
+    CheckOutcome:
+      type: string
+      enum: [healthy, incident]
+    CreateCheckRunRequest:
+      type: object
+      additionalProperties: false
+      required: [dataset_id, target_date]
+      properties:
+        dataset_id:
+          type: string
+          minLength: 1
+        target_date:
+          type: string
+          format: date
+          description: Calendar date interpreted in the dataset's configured time zone.
+    CheckRun:
+      type: object
+      additionalProperties: false
+      required:
+        - run_id
+        - dataset_id
+        - target_date
+        - outcome
+        - metric_name
+        - unit
+        - observed_value
+        - baseline
+        - deviation_percent
+        - evidence
+        - incident_id
+        - resolved_incident_ids
+        - completed_at
+      properties:
+        run_id:
+          type: string
+        dataset_id:
+          type: string
+        target_date:
+          type: string
+          format: date
+        outcome:
+          $ref: "#/components/schemas/CheckOutcome"
+        metric_name:
+          type: string
+          description: Name of the measured metric, for example daily_record_count.
+        unit:
+          type: string
+          description: Measurement unit, for example records.
+        observed_value:
+          type: number
+        baseline:
+          $ref: "#/components/schemas/Baseline"
+        deviation_percent:
+          type: [number, "null"]
+          description: Null when a percentage deviation is undefined, such as a zero baseline.
+        evidence:
+          type: array
+          items:
+            $ref: "#/components/schemas/Evidence"
+        incident_id:
+          type: [string, "null"]
+          description: Current incident identified by this run, when any.
+        resolved_incident_ids:
+          type: array
+          items:
+            type: string
+          description: Previously open incidents resolved by this run.
+        completed_at:
+          type: string
+          format: date-time
+    Baseline:
+      type: object
+      additionalProperties: false
+      required: [value, unit, period_start, period_end, sample_size]
+      properties:
+        value:
+          type: number
+        unit:
+          type: string
+        period_start:
+          type: string
+          format: date
+        period_end:
+          type: string
+          format: date
+        sample_size:
+          type: integer
+          minimum: 0
+          description: Number of historical observations used to produce the baseline.
+    Evidence:
+      type: object
+      additionalProperties: false
+      required: [code, summary, observed_value, baseline_value, unit]
+      properties:
+        code:
+          type: string
+          description: Stable identifier for the evidence or diagnostic rule.
+        summary:
+          type: string
+          description: Concise explanation grounded in the measured values.
+        observed_value:
+          type: number
+        baseline_value:
+          type: number
+        unit:
+          type: string
+        source:
+          type: [string, "null"]
+          description: Source identifier when the evidence is source-specific.
+    IncidentSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - incident_id
+        - dataset_id
+        - dataset_name
+        - status
+        - severity
+        - title
+        - target_date
+        - latest_check_run_id
+        - updated_at
+      properties:
+        incident_id:
+          type: string
+        dataset_id:
+          type: string
+        dataset_name:
+          type: string
+        status:
+          $ref: "#/components/schemas/IncidentStatus"
+        severity:
+          $ref: "#/components/schemas/Severity"
+        title:
+          type: string
+        target_date:
+          type: string
+          format: date
+        latest_check_run_id:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+    IncidentDetail:
+      type: object
+      additionalProperties: false
+      required:
+        - incident_id
+        - dataset_id
+        - dataset_name
+        - status
+        - severity
+        - title
+        - target_date
+        - latest_check_run_id
+        - updated_at
+        - metric_name
+        - unit
+        - observed_value
+        - baseline
+        - deviation_percent
+        - evidence
+        - hypothesis
+        - affected_assets
+        - recommended_action
+        - opened_at
+        - resolved_at
+      properties:
+        incident_id:
+          type: string
+        dataset_id:
+          type: string
+        dataset_name:
+          type: string
+        status:
+          $ref: "#/components/schemas/IncidentStatus"
+        severity:
+          $ref: "#/components/schemas/Severity"
+        title:
+          type: string
+        target_date:
+          type: string
+          format: date
+        latest_check_run_id:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+        metric_name:
+          type: string
+        unit:
+          type: string
+        observed_value:
+          type: number
+        baseline:
+          $ref: "#/components/schemas/Baseline"
+        deviation_percent:
+          type: [number, "null"]
+        evidence:
+          type: array
+          items:
+            $ref: "#/components/schemas/Evidence"
+        hypothesis:
+          type: [object, "null"]
+          additionalProperties: false
+          required: [summary, rule_id, certainty]
+          properties:
+            summary:
+              type: string
+              description: Tentative diagnostic possibility supported by evidence.
+            rule_id:
+              type: string
+            certainty:
+              type: string
+              enum: [tentative]
+            supporting_evidence_codes:
+              type: array
+              items:
+                type: string
+        affected_assets:
+          type: array
+          items:
+            $ref: "#/components/schemas/DownstreamAsset"
+        recommended_action:
+          type: string
+          description: Human investigation step; not an automatic remediation.
+        opened_at:
+          type: string
+          format: date-time
+        resolved_at:
+          type: [string, "null"]
+          format: date-time
+    DownstreamAsset:
+      type: object
+      additionalProperties: false
+      required: [asset_id, name, asset_type]
+      properties:
+        asset_id:
+          type: string
+        name:
+          type: string
+        asset_type:
+          type: string
+          description: Business-output type, for example report.
